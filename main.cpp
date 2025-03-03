@@ -15,6 +15,7 @@
 #include <glm/glm/gtc/type_ptr.hpp>
 #include <glm/glm/gtc/constants.hpp>
 
+#define PI 3.1415926535
 
 // Function prototypes
 void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode);
@@ -43,9 +44,9 @@ CScene::CScene(void) {
     // Вычисляем вершины сферы и заносим их в массив
     const GLfloat fRadius = 1.0;
     for (int alpha = 90, index = 0; alpha <= 270; alpha += step) {
-        const int angleOfVertical = alpha % 360;
+        const double angleOfVertical = (alpha % 360)*PI/180;
         for (int phi = 0; phi <= 360; phi += step, ++index) {
-            const int angleOfHorizontal = phi % 360;
+            const double angleOfHorizontal = (phi % 360)*PI/180;
             /// вычисляем координаты точки
             m_vertices[index].x = fRadius * cos(angleOfVertical) * cos(angleOfHorizontal);
             m_vertices[index].y = fRadius * sin(angleOfVertical);
@@ -53,10 +54,16 @@ CScene::CScene(void) {
         }
     } 
 
-    // Вычисляем индексы вершин и заносим их в массив
-    for (int index = 0; index < numberOfIndices; index += 2) {
-        m_indices[index] = index >> 1;
-        m_indices[index + 1] = m_indices[index] + (360 / step) + 1;
+    int index = 0;
+    int rows = 180 / step;
+    int cols = 360 / step + 1;
+
+    for (int row = 0; row < rows; row++) {
+        for (int col = 0; col <= 360 / step; col++) {
+            // Добавляем две вершины - одну из текущего кольца, одну из следующего
+            m_indices[index++] = row * cols + col;
+            m_indices[index++] = (row + 1) * cols + col;
+        }
     }
 } 
 
@@ -128,7 +135,7 @@ int main(){
         glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(projLoc, 1, GL_FALSE, glm::value_ptr(projection));
         glBindVertexArray(VAO);
-        glDrawElements(GL_POINTS, sizeof(earth.m_indices), GL_UNSIGNED_INT, 0);
+        glDrawElements(GL_POINTS, CScene::numberOfIndices, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
         glfwSwapBuffers(window);
     }
