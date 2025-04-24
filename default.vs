@@ -4,6 +4,7 @@ layout (location = 1) in vec3 normal;
 
 out vec3 FragPos;
 out vec3 Normal;
+out vec3 TexCoords;
 
 uniform mat4 model;
 uniform mat4 view;
@@ -11,6 +12,7 @@ uniform mat4 projection;
 
 void main()
 {
+    TexCoords = normalize(normal);
     vec4 worldPos = model * vec4(position, 1.0);
     FragPos = worldPos.xyz;
 

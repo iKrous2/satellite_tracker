@@ -7,6 +7,7 @@
 #include <iostream>
 
 #include <GL/glew.h> // Подключаем glew для того, чтобы получить все необходимые заголовочные файлы OpenGL
+#include <glm/glm/gtc/type_ptr.hpp> // для glm::value_ptr
 
 class Shader
 {
@@ -17,6 +18,10 @@ public:
     Shader(const GLchar* vertexPath, const GLchar* fragmentPath);
     // Использование программы
     void Use();
+
+    void setMat4(const std::string& name, const glm::mat4& mat) const {
+        glUniformMatrix4fv(glGetUniformLocation(Program, name.c_str()), 1, GL_FALSE, glm::value_ptr(mat));
+    }
 };
 
 Shader::Shader(const GLchar* vertexPath, const GLchar* fragmentPath){
