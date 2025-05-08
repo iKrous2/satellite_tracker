@@ -12,6 +12,7 @@
 // Other includes
 #include "Shader.h"
 #include "Camera.h"
+#include "Satpredictor.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
 #include <glm/glm/glm.hpp>
@@ -29,7 +30,7 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void Do_Movement();
 
 // Camera
-Camera camera(glm::vec3(0.0f, 0.0f, 3.0f));
+Camera camera(glm::vec3(1.0f, 0.0f, 0.0f));
 bool keys[1024];
 GLfloat lastX = 400, lastY = 300;
 bool firstMouse = true;
@@ -75,10 +76,10 @@ CScene::CScene(void) {
                 m_vertices[index].y * m_vertices[index].y +
                 m_vertices[index].z * m_vertices[index].z
             );
-            m_vertices[index].xn = m_vertices[index].x / length;            
-            m_vertices[index].yn = m_vertices[index].y / length;            
+            m_vertices[index].xn = m_vertices[index].x / length;
+            m_vertices[index].yn = m_vertices[index].y / length;
             m_vertices[index].zn = m_vertices[index].z / length;
-            
+
         }
     }
 
@@ -129,13 +130,11 @@ unsigned int loadCubemap(std::vector<std::string> faces)
 
 glm::vec3 lightPos(12.6f, 0.0f, 0.0f);
 
-const float EARTH_RADIUS_KM = 6371.0f;  // Радиус Земли в км
 const float EARTH_SPIN_TIME = 86164.0905f;
-// Пример TLE для спутника (например, МКС)
-std::string tle_line1 = "1 25544U 98067A   22348.84664469  .00001402  00000+0  31829-4 0  9994";
-std::string tle_line2 = "2 25544  51.6423 318.7503 0006835  36.0298 324.1326 15.50086584378600";
 
-int main(){
+float animationSpeed = 100.0f;
+
+int main() {
     double orbitDuration = 5400;   // продолжительность орбиты в секундах (примерно 90 минут)
     double dt = 10;  // шаг времени в секундах
 
@@ -174,6 +173,7 @@ int main(){
     Shader lightShader("D:/OpenGL_Projects/satellite_tracker/light.vs", "D:/OpenGL_Projects/satellite_tracker/light.frag");
     Shader skyboxShader("D:/OpenGL_Projects/satellite_tracker/skybox.vs", "D:/OpenGL_Projects/satellite_tracker/skybox.frag");
     Shader satelliteShader("D:/OpenGL_Projects/satellite_tracker/satellite.vs", "D:/OpenGL_Projects/satellite_tracker/satellite.frag");
+    Shader orbitShader("D:/OpenGL_Projects/satellite_tracker/orbit.vs", "D:/OpenGL_Projects/satellite_tracker/orbit.frag");
 
     float satelliteVertices[] = {
         // Нижнее основание (нижняя грань)
@@ -266,11 +266,11 @@ int main(){
     unsigned int cubemapTexture = loadCubemap(faces);
 
     std::vector<std::string> skyfaces = {
-            "skybox/right.jpg", 
-            "skybox/left.jpg", 
-            "skybox/top.jpg", 
-            "skybox/bottom.jpg", 
-            "skybox/front.jpg", 
+            "skybox/right.jpg",
+            "skybox/left.jpg",
+            "skybox/top.jpg",
+            "skybox/bottom.jpg",
+            "skybox/front.jpg",
             "skybox/back.jpg"
     };
     unsigned int skyTexture = loadCubemap(skyfaces);
@@ -318,7 +318,7 @@ int main(){
          1.0f, -1.0f, -1.0f,
         -1.0f, -1.0f,  1.0f,
          1.0f, -1.0f,  1.0f
-    };   
+    };
 
     GLuint skyboxVAO, skyboxVBO;
     glGenVertexArrays(1, &skyboxVAO);
@@ -330,10 +330,44 @@ int main(){
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glBindVertexArray(0);
 
-    while (!glfwWindowShouldClose(window)){
+
+
+    ////////////////////////////////////////////////////////////////
+
+    double meanMotion = 15.50086584378600; // Обороты/сутки
+    double eccentricity = 0.0006835;       // Эксцентриситет
+    double inclination = 51.6423 * PI / 180.0; // Наклонение (градусы -> радианы)
+    double argumentOfPerigee = 36.0298 * PI / 180.0; // Аргумент перицентра (градусы -> радианы)
+    double rightAscension = 318.7503 * PI / 180.0; // Долгота узла (градусы -> радианы)
+    double meanAnomaly = 324.1326 * PI / 180.0; // Средняя аномалия (градусы -> радианы)
+
+    // Создаём объект класса
+    SatellitePredictor mks(meanMotion, eccentricity, inclination, argumentOfPerigee, rightAscension, meanAnomaly);
+
+    // Прогнозируем позицию через 1.5 часа (5400 секунд)
+    std::vector<glm::vec3> PosSize[5400];
+    std::vector<glm::vec3> orbitPoints;
+    for (size_t i = 0; i != 5900; ++i) {
+        orbitPoints.push_back(mks.predictPosition(i));
+    }
+    ////////////////////////////////////////////////////////////////
+
+    GLuint orbitVAO, orbitVBO;
+
+    glGenVertexArrays(1, &orbitVAO);
+    glGenBuffers(1, &orbitVBO);
+    glBindVertexArray(orbitVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, orbitVBO);
+    glBufferData(GL_ARRAY_BUFFER, orbitPoints.size() * sizeof(glm::vec3), orbitPoints.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glBindVertexArray(0);
+
+    while (!glfwWindowShouldClose(window)) {
         GLfloat currentFrame = glfwGetTime();
         deltaTime = currentFrame - lastFrame;
-        lastFrame = currentFrame;        
+        lastFrame = currentFrame;
         glfwPollEvents();
         Do_Movement();
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -347,16 +381,12 @@ int main(){
         glUniform3f(objectColorLoc, 1.0f, 0.0f, 0.0f);
         glUniform3f(lightColorLoc, 1.0f, 1.0f, 1.0f);
         glm::mat4 model = glm::mat4(1.0f);
-        glm::mat4 view = camera.GetViewMatrix();        
-        glm::mat4 projection = glm::perspective(45.0f, (GLfloat)WIDTH / (GLfloat)HEIGHT, 0.1f, 100.0f);        
-        //model = glm::rotate(model, 23.4f, glm::vec3(1.0f, 0.0f, 0.0f));
-        model = glm::rotate(model, -90.0f, glm::vec3(0.0f, 1.0f, 0.0f));
-        //glm::radians(180.0f)
-        //model = glm::rotate(model, (GLfloat)glfwGetTime() * 12, glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::mat4 view = camera.GetViewMatrix();
+        glm::mat4 projection = glm::perspective(45.0f, (GLfloat)WIDTH / (GLfloat)HEIGHT, 0.1f, 100.0f);
         model = glm::scale(model, glm::vec3(0.2f));
         GLint modelLoc = glGetUniformLocation(ourShader.Program, "model");
         GLint viewLoc = glGetUniformLocation(ourShader.Program, "view");
-        GLint projLoc = glGetUniformLocation(ourShader.Program, "projection");        
+        GLint projLoc = glGetUniformLocation(ourShader.Program, "projection");
         glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
         glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(projLoc, 1, GL_FALSE, glm::value_ptr(projection));
@@ -364,25 +394,40 @@ int main(){
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
         glDrawElements(GL_TRIANGLE_STRIP, CScene::numberOfIndices, GL_UNSIGNED_INT, 0);
-        glBindVertexArray(0);        
+        glBindVertexArray(0);
 
-        satelliteShader.Use();
+        satelliteShader.Use();       
+        float currentTime = glfwGetTime();
+        int posIndex = static_cast<int>(currentTime * animationSpeed) % sizeof(PosSize);
+        glm::vec3 currentPosition = mks.predictPosition(posIndex);
         modelLoc = glGetUniformLocation(lightShader.Program, "model");
         viewLoc = glGetUniformLocation(lightShader.Program, "view");
         projLoc = glGetUniformLocation(lightShader.Program, "projection");
         glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(projLoc, 1, GL_FALSE, glm::value_ptr(projection));
-        model = glm::mat4(1.0f);
-        model = glm::scale(model, glm::vec3(0.2f));
-        //model = glm::translate(model, glm::vec3(0.573, 0.873, 0.299));
-        model = glm::translate(model, glm::vec3(0.302f, 0.872f, -0.573f));
-        model = glm::scale(model, glm::vec3(0.01f));
-        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+        glm::mat4 satmodel = glm::mat4(1.0f);
+        satmodel = glm::rotate(satmodel, -90.0f, glm::vec3(1.0f, 0.0f, 0.0f));
+        satmodel = glm::scale(satmodel, glm::vec3(0.2f));
+        //satmodel = glm::translate(satmodel, glm::vec3(0.5305, 0.276, 0.804));
+        satmodel = glm::translate(satmodel, currentPosition);
+        satmodel = glm::scale(satmodel, glm::vec3(0.01f));
+        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(satmodel));
         glBindVertexArray(satVAO);
         glDrawElements(GL_TRIANGLE_STRIP, 36, GL_UNSIGNED_INT, 0);
         //glDrawArrays(GL_TRIANGLES, 0, 36);
-        glBindVertexArray(0);      
+        glBindVertexArray(0);
 
+        orbitShader.Use();
+        glm::mat4 orbitModel = glm::mat4(1.0f);
+        orbitModel = glm::scale(orbitModel, glm::vec3(0.2f));
+        orbitModel = glm::rotate(orbitModel, -90.0f, glm::vec3(1.0f, 0.0f, 0.0f));
+        glUniformMatrix4fv(glGetUniformLocation(orbitShader.Program, "model"), 1, GL_FALSE, glm::value_ptr(orbitModel));
+        glUniformMatrix4fv(glGetUniformLocation(orbitShader.Program, "view"), 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(orbitShader.Program, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+        glUniform3f(glGetUniformLocation(orbitShader.Program, "lineColor"), 0.5f, 0.8f, 1.0f);
+        glBindVertexArray(orbitVAO);
+        glDrawArrays(GL_LINE_STRIP, 0, orbitPoints.size());
+        glBindVertexArray(0);
 
         lightShader.Use();
         lightPosLoc = glGetUniformLocation(lightShader.Program, "lightPos");
@@ -396,13 +441,13 @@ int main(){
         model = glm::translate(model, lightPos);
         model = glm::scale(model, glm::vec3(0.05f));
         glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
-        glBindVertexArray(lightVAO);        
+        glBindVertexArray(lightVAO);
         glDrawElements(GL_TRIANGLE_STRIP, CScene::numberOfIndices, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
 
         glDepthFunc(GL_LEQUAL);
         skyboxShader.Use();
-        view = glm::mat4(glm::mat3(camera.GetViewMatrix())); // Уберите трансформацию позиции
+        view = glm::mat4(glm::mat3(camera.GetViewMatrix())); 
         projection = glm::perspective(45.0f, (float)WIDTH / HEIGHT, 0.1f, 100.0f);
         skyboxShader.setMat4("view", view);
         skyboxShader.setMat4("projection", projection);
