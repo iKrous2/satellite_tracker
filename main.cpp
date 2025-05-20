@@ -1,6 +1,9 @@
 ﻿#include <iostream>
 #include <vector>
 #include <string>
+#include <thread>   // Для std::this_thread
+#include <chrono>
+#include <iomanip>
 
 // GLEW
 #define GLEW_STATIC
@@ -19,7 +22,22 @@
 #include <glm/glm/gtc/matrix_transform.hpp>
 #include <glm/glm/gtc/type_ptr.hpp>
 #include <glm/glm/gtc/constants.hpp>
+#include <date.h>
 
+
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_opengl3.h>
+
+using namespace date;
+using namespace std::chrono;
+
+struct DateTimeResult {
+    std::string formatted;   // Готовый строковый формат
+    std::tm time_struct;      // Стандартная структура времени
+    int milliseconds;         // Миллисекунды
+    double total_seconds;     // Общее время в секундах с эпохи Unix
+};
 
 #define PI 3.1415926535
 
@@ -28,6 +46,13 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void Do_Movement();
+DateTimeResult convertTLEEpoch(double tle_epoch);
+DateTimeResult convertSecondsToDateTime(double seconds);
+std::string tle_epoch_to_datetime(double tle_epoch);
+
+bool is_leap_year(int year) {
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
 
 // Camera
 Camera camera(glm::vec3(1.0f, 0.0f, 0.0f));
@@ -132,12 +157,15 @@ glm::vec3 lightPos(12.6f, 0.0f, 0.0f);
 
 const float EARTH_SPIN_TIME = 86164.0905f;
 
-float animationSpeed = 100.0f;
+float simulationTime = 0.0f;  // Время симуляции (не зависит от скорости)
+float prevAnimationSpeed = 1.0f;
+bool speedChanged = false;
+float animationSpeed = 10.0f;
+bool is_paused = false;
+bool cameraMode = true; // true - камера управляется мышью, false - курсор виден
+bool uiMode = false;    // Дополнительный флаг для режима UI (если нужно)
 
-int main() {
-    double orbitDuration = 5400;   // продолжительность орбиты в секундах (примерно 90 минут)
-    double dt = 10;  // шаг времени в секундах
-
+int main() {    
     // Init GLFW
     glfwInit();
     // Set all the required options for GLFW
@@ -164,6 +192,13 @@ int main() {
 
     // Define the viewport dimensions
     glViewport(0, 0, WIDTH, HEIGHT);
+
+    //imgui initzialization
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 330");
+    ImGui::StyleColorsDark();
 
     // Setup OpenGL options
     glEnable(GL_DEPTH_TEST);
@@ -330,25 +365,20 @@ int main() {
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glBindVertexArray(0);
 
-
-
-    ////////////////////////////////////////////////////////////////
-
-    double meanMotion = 15.50086584378600; // Обороты/сутки
-    double eccentricity = 0.0006835;       // Эксцентриситет
-    double inclination = 51.6423 * PI / 180.0; // Наклонение (градусы -> радианы)
-    double argumentOfPerigee = 36.0298 * PI / 180.0; // Аргумент перицентра (градусы -> радианы)
-    double rightAscension = 318.7503 * PI / 180.0; // Долгота узла (градусы -> радианы)
-    double meanAnomaly = 324.1326 * PI / 180.0; // Средняя аномалия (градусы -> радианы)
-
-    // Создаём объект класса
-    SatellitePredictor mks(meanMotion, eccentricity, inclination, argumentOfPerigee, rightAscension, meanAnomaly);
+    SatellitePredictor iss(
+        15.49604105510665,  // meanMotion (оборотов/сутки)
+        0.0002193,    // eccentricity
+        51.6355 ,      // inclination (градусы)
+        124.9576,     // argumentOfPerigee (градусы)
+        90.7571,     // rightAscension (градусы)
+        235.1619      // meanAnomaly (градусы)
+    );
 
     // Прогнозируем позицию через 1.5 часа (5400 секунд)
-    std::vector<glm::vec3> PosSize[5400];
+    std::vector<glm::vec3> PosSize[24000];
     std::vector<glm::vec3> orbitPoints;
-    for (size_t i = 0; i != 5900; ++i) {
-        orbitPoints.push_back(mks.predictPosition(i));
+    for (size_t i = 0; i != 24000; ++i) {
+        orbitPoints.push_back(iss.toGLMCoordinates(iss.predictPositionECEF(i)));
     }
     ////////////////////////////////////////////////////////////////
 
@@ -365,6 +395,14 @@ int main() {
     glBindVertexArray(0);
 
     while (!glfwWindowShouldClose(window)) {
+        ImGuiIO& io = ImGui::GetIO();
+        if (cameraMode) {
+            io.WantCaptureMouse = false; // Позволяем камере получать события мыши
+        }
+        else {
+            io.WantCaptureMouse = true; // Даем ImGui управление курсором
+        }
+        
         GLfloat currentFrame = glfwGetTime();
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
@@ -396,10 +434,23 @@ int main() {
         glDrawElements(GL_TRIANGLE_STRIP, CScene::numberOfIndices, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
 
+        if (!is_paused) {
+            // Плавное изменение скорости
+            if (speedChanged) {
+                simulationTime += deltaTime * prevAnimationSpeed;
+                prevAnimationSpeed = animationSpeed;
+                speedChanged = false;
+            }
+            else {
+                simulationTime += deltaTime * animationSpeed;
+            }
+        }
+
         satelliteShader.Use();       
         float currentTime = glfwGetTime();
-        int posIndex = static_cast<int>(currentTime * animationSpeed) % sizeof(PosSize);
-        glm::vec3 currentPosition = mks.predictPosition(posIndex);
+        float orbitDuration = 24000; // Период обращения в секундах
+        float normalizedTime = fmod(simulationTime, orbitDuration);
+        glm::vec3 currentPosition = iss.toGLMCoordinates(iss.predictPositionECEF(normalizedTime));
         modelLoc = glGetUniformLocation(lightShader.Program, "model");
         viewLoc = glGetUniformLocation(lightShader.Program, "view");
         projLoc = glGetUniformLocation(lightShader.Program, "projection");
@@ -408,14 +459,77 @@ int main() {
         glm::mat4 satmodel = glm::mat4(1.0f);
         satmodel = glm::rotate(satmodel, -90.0f, glm::vec3(1.0f, 0.0f, 0.0f));
         satmodel = glm::scale(satmodel, glm::vec3(0.2f));
-        //satmodel = glm::translate(satmodel, glm::vec3(0.5305, 0.276, 0.804));
         satmodel = glm::translate(satmodel, currentPosition);
+        //satmodel = glm::translate(satmodel, glm::vec3(0.0f, 0.0f, 1.0f));
         satmodel = glm::scale(satmodel, glm::vec3(0.01f));
         glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(satmodel));
         glBindVertexArray(satVAO);
         glDrawElements(GL_TRIANGLE_STRIP, 36, GL_UNSIGNED_INT, 0);
-        //glDrawArrays(GL_TRIANGLES, 0, 36);
         glBindVertexArray(0);
+
+        //////////////////
+
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        // Создаем UI-окно с элементами управления
+        ImGui::Begin("Time Control");
+        {
+            double tle_epoch = 25139.18441541;
+            /*auto dt = convertTLEEpoch(tle_epoch);
+            auto dt2 = convertSecondsToDateTime(dt.total_seconds);
+            ImGui::Text("TLE Time: %s", dt2.formatted.c_str());*/
+
+            std::string datetime_str = tle_epoch_to_datetime(tle_epoch);
+            ImGui::Text("TLE Time: %s", datetime_str.c_str());
+
+            ImGui::TextColored(ImVec4(0, 1, 0, 1), "X: %.3f km", currentPosition.x * EARTH_RADIUS_KM);
+            ImGui::TextColored(ImVec4(0, 1, 0, 1), "Y: %.3f km", currentPosition.y * EARTH_RADIUS_KM);
+            ImGui::TextColored(ImVec4(0, 1, 0, 1), "Z: %.3f km", currentPosition.z * EARTH_RADIUS_KM);
+
+            // Визуальный разделитель
+            ImGui::Separator();
+
+            // Дополнительная информация
+            ImGui::Text("Earth-Centered, Earth-Fixed");
+            ImGui::Text("Units: Kilometers");
+
+            if (ImGui::Button(is_paused ? "Resume" : "Pause")) {
+                switch (is_paused) {
+                case false:
+                    animationSpeed = 0.0f;
+                    is_paused = !is_paused;
+                    break;
+                case true:
+                    animationSpeed = 10.0f;
+                    is_paused = false;
+                    break;
+                }
+            }
+
+            ImGui::SameLine();
+
+            if (ImGui::Button("Speed x2") && !is_paused) {
+                prevAnimationSpeed = animationSpeed;
+                animationSpeed *= 2.0f;
+                speedChanged = true;
+            }
+
+            ImGui::SameLine();
+
+            if (ImGui::Button("Speed /2") && !is_paused) {
+                prevAnimationSpeed = animationSpeed;
+                animationSpeed *= 0.5f;
+                speedChanged = true;
+            }
+
+            ImGui::Text("Current speed: %.1fx", is_paused ? 0.0f : animationSpeed);
+            ImGui::Text("Orbit time: %.1f / %.1f sec", fmod(simulationTime, orbitDuration), orbitDuration);
+        }
+        ImGui::End();
+
+        /////////////////
 
         orbitShader.Use();
         glm::mat4 orbitModel = glm::mat4(1.0f);
@@ -459,8 +573,14 @@ int main() {
         glBindVertexArray(0);
         glDepthFunc(GL_LESS);
 
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        
         glfwSwapBuffers(window);
     }
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
     glfwTerminate();
@@ -483,6 +603,14 @@ void Do_Movement()
 void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode)
 {
     //cout << key << endl;
+    if (key == GLFW_KEY_TAB && action == GLFW_PRESS) {
+        cameraMode = !cameraMode;
+        // Переключаем режим курсора
+        glfwSetInputMode(window, GLFW_CURSOR,
+            cameraMode ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+        // Костыль для предотвращения мгновенного переключения обратно
+        //std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
         glfwSetWindowShouldClose(window, GL_TRUE);
     if (key >= 0 && key < 1024)
@@ -496,6 +624,7 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
 
 void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 {
+    if (!cameraMode) return;
     if (firstMouse)
     {
         lastX = xpos;
@@ -515,4 +644,122 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
     camera.ProcessMouseScroll(yoffset);
+}
+
+DateTimeResult convertTLEEpoch(double tle_epoch) {
+    DateTimeResult result;
+
+    // 1. Разбор входных данных
+    int full_days = static_cast<int>(tle_epoch);
+    double fractional_day = tle_epoch - full_days;
+
+    // 2. Извлечение года и дня года
+    int year = 2000 + (full_days / 1000);
+    int day_of_year = full_days % 1000;
+
+    // 3. Преобразование дня года в дату
+    std::tm tm = { 0 };
+    tm.tm_year = year - 1900;
+    tm.tm_mday = day_of_year;
+
+    mktime(&tm);  // Нормализация структуры времени
+
+    // 4. Преобразование дробной части дня
+    double total_day_seconds = fractional_day * 86400.0;
+    result.milliseconds = static_cast<int>((total_day_seconds - floor(total_day_seconds)) * 1000);
+
+    tm.tm_hour = static_cast<int>(total_day_seconds / 3600);
+    tm.tm_min = static_cast<int>(fmod(total_day_seconds, 3600) / 60);
+    tm.tm_sec = static_cast<int>(fmod(total_day_seconds, 60));
+
+    // 5. Вычисление общего времени в секундах
+    time_t base_seconds = mktime(&tm);
+    result.total_seconds = static_cast<double>(base_seconds) + (result.milliseconds / 1000.0);
+
+    // 6. Форматирование строки
+    char buffer[32];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &tm);
+    result.formatted = std::string(buffer) + "." + std::to_string(result.milliseconds).substr(0, 3);
+    result.time_struct = tm;
+
+    return result;
+}
+
+// Функция преобразования секунд Unix в структуру времени без gmtime
+DateTimeResult convertSecondsToDateTime(double seconds) {
+    DateTimeResult result;
+    result.total_seconds = seconds;
+
+    // 1. Разделение на целые секунды и миллисекунды
+    time_t total_sec = static_cast<time_t>(seconds);
+    result.milliseconds = static_cast<int>((seconds - total_sec) * 1000);
+
+    // 2. Ручной расчёт компонентов времени UTC (начиная с 1970-01-01)
+    const int SEC_PER_MIN = 60;
+    const int SEC_PER_HOUR = 3600;
+    const int SEC_PER_DAY = 86400;
+    const int DAYS_PER_YEAR = 365;
+
+    int days = total_sec / SEC_PER_DAY;
+    int rem_sec = total_sec % SEC_PER_DAY;
+
+    // Вычисление часов, минут, секунд
+    result.time_struct.tm_hour = rem_sec / SEC_PER_HOUR;
+    rem_sec %= SEC_PER_HOUR;
+    result.time_struct.tm_min = rem_sec / SEC_PER_MIN;
+    result.time_struct.tm_sec = rem_sec % SEC_PER_MIN;
+
+    // Вычисление года и дня года
+    int year = 1970;
+    while (days >= DAYS_PER_YEAR + is_leap_year(year)) {
+        days -= DAYS_PER_YEAR + is_leap_year(year);
+        year++;
+    }
+    result.time_struct.tm_year = year - 1900;
+
+    // Вычисление месяца и дня месяца
+    static int month_days[] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
+    if (is_leap_year(year)) month_days[1] = 29;
+
+    int month = 0;
+    while (days >= month_days[month]) {
+        days -= month_days[month];
+        month++;
+    }
+    result.time_struct.tm_mon = month;
+    result.time_struct.tm_mday = days + 1; // Дни начинаются с 1
+
+    // 3. Форматирование строки
+    char buffer[32];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &result.time_struct);
+    result.formatted = std::string(buffer) + "." +
+        std::to_string(result.milliseconds).substr(0, 3);
+
+    return result;
+}
+
+std::string tle_epoch_to_datetime(double tle_epoch) {
+    using namespace date;
+    using namespace std::chrono;
+
+    double integral;
+    double fractional = modf(tle_epoch, &integral);
+
+    int epoch_int = static_cast<int>(integral);
+    int year = 2000 + (epoch_int / 1000);
+    int day_of_year = epoch_int % 1000;
+
+    // Создание даты через sys_days
+    auto ymd = year_month_day{
+        sys_days(date::year(year) / 1 / 1) + // 1 января указанного года
+        days(day_of_year - 1)            // добавляем N-1 дней
+    };
+
+    // Преобразование дробной части в миллисекунды
+    auto day_duration = duration_cast<milliseconds>(duration<double>(fractional * 86400));
+    hh_mm_ss<milliseconds> time(day_duration);
+
+    std::ostringstream oss;
+    oss << ymd << " " << time;
+    return oss.str();
 }
